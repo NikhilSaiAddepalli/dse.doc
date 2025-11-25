@@ -1,0 +1,58 @@
+env NAME=fmigateway
+
+# Operate from the WORKDIR (allocated by caller, i.e. docker command).
+cd $WORKDIR
+env SIM=sim
+
+env EXAMPLE=$REPODIR/dse/build/_out/examples/gateway
+env FMU_IMPORTER=$REPODIR/dse/build/_out/importer/fmuImporter
+
+
+# Create the simulation folder (Simer layout)
+exec ls -R $WORK
+mkdir $SIM/bin
+cp $FMU_IMPORTER $SIM/bin/fmuImporter
+
+exec cp -R $EXAMPLE/fmi2 $SIM/fmu
+exec cp -R $EXAMPLE/model $SIM/model
+
+# TEST: FMI Gateway with FMI2
+exec sh -e $WORK/test.sh
+
+stdout 'Importer: FMU Dir: /sim/fmu'
+stdout 'Importer: Loading FMU: binaries/linux64/libfmi2gateway.so'
+stdout 'FMU Model instantiated'
+stdout 'Resource location: resources'
+stdout 'Setting up the Simbus connection...'
+stdout 'Connected to the Simbus...'
+stdout 'Configure Channel: scalar_vector'
+stdout 'Configure Channel: binary_vector'
+stdout 'Build indexes...'
+stdout 'Scalar: input=2, output=2'
+stdout 'Binary: rx=4, tx=4'
+stdout 'Encoding: enc=8, dec=8'
+
+stdout 'name       : can'
+stdout 'length     : 584'
+stdout 'buffer len : 584'
+
+stdout 'Importer: Calling fmi2DoStep\(\): model_time=0.004500, step_size=0.000500'
+stdout 'Model: RX\[132\] Hello from Importer \(10\)'
+stdout 'Importer: network message \(RX\): Hello World! from node_id=1'
+
+-- test.sh --
+SIMER="${SIMER:-ghcr.io/boschglobal/dse-simer:latest}"
+
+docker run --name gateway -i --rm -v $ENTRYWORKDIR/$SIM:/sim \
+    --env SIMBUS_LOGLEVEL=4 \
+    --net="host" \
+    --entrypoint="" $SIMER \
+    bash -c "cd fmu; valgrind -q --leak-check=yes --error-exitcode=808 \
+    ../bin/fmuImporter --verbose --step_size=0.0005 --steps=10" &
+
+docker run --name simer -i --rm -v $ENTRYWORKDIR/$SIM:/sim \
+    --env SIMBUS_LOGLEVEL=4 \
+    --env target_inst:SIMBUS_LOGGER=4 \
+    --net="host" \
+    $SIMER \
+    -stepsize 0.0005 -endtime 0.0050

@@ -1,0 +1,105 @@
+# Copyright 2024 Robert Bosch GmbH
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+kind: Model
+metadata:
+  name: FMU
+  annotations:
+    mcl_adapter: 'fmi'
+    mcl_version: '2.0'
+    fmi_model_cosim: true
+    fmi_model_version: '1.48'
+    fmi_stepsize: '0.0001'
+    fmi_guid: '{11111111-2222-3333-4444-555555555555}'
+    fmi_resource_dir: 'dse/build/_out/fmimcl/example/simple/fmu/resources'
+spec:
+  runtime:
+    dynlib:
+      - os: linux
+        arch: amd64
+        path: ../../../../dse/build/_out/fmimcl/lib/libfmimcl.so
+    mcl:
+      - os: linux
+        arch: amd64
+        path: examples/fmu/fmu/binaries/simple.so
+  channels:
+    - alias: signal_channel
+      selectors:
+        channel: signal_vector
+    - alias: network_channel
+      selectors:
+        channel: network_vector
+---
+kind: SignalGroup
+metadata:
+  name: VARIABLES
+  labels:
+    model: FMU
+    channel: signal_vector
+spec:
+  signals:
+    - signal: foo
+      annotations:
+        fmi_variable_vref: 0
+        fmi_variable_name: foo
+        fmi_variable_type: Real
+        fmi_variable_start: 42.0
+    - signal: bar
+      annotations:
+        fmi_variable_vref: 1
+        fmi_variable_name: bar
+        fmi_variable_type: Real
+        fmi_variable_start: 24.0
+    - signal: count
+      annotations:
+        fmi_variable_vref: 2
+        fmi_variable_name: count
+        fmi_variable_type: Integer
+        fmi_variable_start: 0
+    - signal: active
+      annotations:
+        fmi_variable_vref: 3
+        fmi_variable_name: active
+        fmi_variable_type: Boolean
+        fmi_variable_start: 0
+---
+kind: SignalGroup
+metadata:
+  name: BINARY_VARIABLES
+  labels:
+    model: FMU
+    channel: network_vector
+  annotations:
+    vector_type: binary
+spec:
+  signals:
+    - signal: string_tx
+      annotations:
+        fmi_variable_vref: 4
+        fmi_variable_name: string_tx
+        fmi_variable_type: String
+        fmi_variable_causality: input
+    - signal: string_rx
+      annotations:
+        fmi_variable_vref: 5
+        fmi_variable_name: string_rx
+        fmi_variable_type: String
+        fmi_variable_causality: output
+    - signal: string_ascii85_tx
+      annotations:
+        fmi_variable_vref: 6
+        fmi_variable_name: string_ascii85_tx
+        fmi_variable_type: String
+        fmi_variable_causality: input
+        fmi_annotations:
+          dse.standards.fmi-ls-binary-to-text.encoding: ascii85
+    - signal: string_ascii85_rx
+      annotations:
+        fmi_variable_vref: 7
+        fmi_variable_name: string_ascii85_rx
+        fmi_variable_type: String
+        fmi_variable_causality: output
+        fmi_annotations:
+          dse.standards.fmi-ls-binary-to-text.encoding: ascii85

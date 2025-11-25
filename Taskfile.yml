@@ -1,0 +1,368 @@
+---
+version: '3'
+
+metadata:
+  package:
+    download: '{{.REPO}}/releases/download/v{{.TAG}}/Fmi-{{.TAG}}-{{.PLATFORM_ARCH}}.zip'
+  container:
+    repository: ghcr.io/boschglobal/dse-fmi
+  models:
+    dse.fmi.mcl:
+      name: fmimcl
+      displayName: dse.fmi.mcl
+      path: fmimcl
+      mcl: true
+      workflows:
+        - generate-fmimcl
+        - generate-fmimodelc
+        - generate-fmigateway
+        - patch-signalgroup
+      platforms:
+        - linux-amd64
+        - linux-x86
+        - linux-i386
+        - windows-x64
+        - windows-x86
+      channels:
+        - alias: signal_channel
+        - alias: network_channel
+
+vars:
+  # When running from E2E tests (i.e. Docker in Docker), the ENTRYDIR (for
+  # Docker commands) must be set to the host relative path.
+  ENTRYDIR: '{{if .SIM}}{{.ENTRYWORKDIR}}/{{.SIM}}{{else}}{{.PWD}}{{end}}'
+  # Container image specification.
+  # TODO Taskfile issue, vars are evaluated when file parsed, so default option
+  # is set ... after which importing Taskfile vars will not apply as expected.
+  FMI_IMAGE: '{{.FMI_IMAGE | default "ghcr.io/boschglobal/dse-fmi:latest"}}'
+  USER:
+    sh: id -u
+  GROUP:
+    sh: id -g
+
+tasks:
+
+  generate-fmimcl:
+    desc: Generate an FMI MCL from an existing FMU.
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:generate-fmimcl
+    vars:
+      # FMU_DIR: '{{.FMU_DIR}}'
+      OUT_DIR: '{{.OUT_DIR | default "out/model"}}'
+      # MCL_PATH: '{{.MCL_PATH}}'
+      FMU_MODELDESC: '{{.FMU_DIR}}/modelDescription.xml'
+      SIGNAL_GROUP: "{{if .SIGNAL_GROUP}}'{{.SIGNAL_GROUP}}'{{else}}'{{.OUT_DIR}}/signalgroup.yaml'{{end}}"
+    env:
+      FMU_DIR: '{{.FMU_DIR}}'
+    cmds:
+      - env | sort
+      - task: gen-mcl
+        vars:
+          FMU_DIR: '{{.FMU_DIR}}'
+          OUT_DIR: '{{.OUT_DIR}}'
+          MCL_PATH: '{{.MCL_PATH}}'
+          PLATFORM: '{{coalesce .PLATFORM .PLATFORM_ARCH}}'
+      - task: gen-signalgroup
+        vars:
+          INPUT: '{{.FMU_MODELDESC}}'
+          OUTPUT: '{{.SIGNAL_GROUP}}'
+    requires:
+      vars: [FMU_DIR, MCL_PATH]
+    metadata:
+      vars:
+        FMU_DIR:
+          required: true
+          hint: URI identifying an FMU (select from 'uses' or manually enter a path).
+        OUT_DIR:
+          required: true
+          hint: Directory where the model should be created (sim relative).
+          default: out/model
+        MCL_PATH:
+          required: true
+          hint: Path where the FMI MCL shared library is located.
+        FMU_MODELDESC:
+          required: false
+          hint: Path where the FMI modelDescription.xml should be created.
+          default: '{{.FMU_DIR}}/modelDescription.xml'
+        SIGNAL_GROUP:
+          required: false
+          hint: Path where the associated Signal Group should be created.
+          default: '{{.OUT_DIR}}/signalgroup.yaml'
+        PLATFORM:
+          required: false
+          hint: Platform of the FMU being generated (normally set automatically).
+      generates:
+        - data/model.yaml
+        - data/signalgroup.yaml
+
+  generate-fmimodelc:
+    desc: Generate a FMI ModelC FMU from an existing (DSE/ModelC) Simer simulation.
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:generate-fmimodelc
+    vars: {}
+    cmds:
+      - task: gen-modelcfmu-annotations
+        vars:
+          SIM_DIR: '{{.SIM_DIR}}'
+          RULESET: 'signal-direction'
+          SIGNAL_GROUPS: '{{.SIGNAL_GROUPS}}'
+      - task: gen-fmu
+        vars:
+          SIM_DIR: '{{.SIM_DIR}}'
+          FMU_NAME: '{{.FMU_NAME}}'
+          PLATFORM: '{{coalesce .PLATFORM .PLATFORM_ARCH}}'
+          SIGNAL_GROUPS: '{{.SIGNAL_GROUPS}}'
+          VERSION: '{{.VERSION}}'
+          UUID: '{{.UUID}}'
+          FMI_VERSION: '{{.FMI_VERSION}}'
+          OUT_DIR: '{{.OUT_DIR}}'
+    requires:
+      vars: [FMU_NAME, SIGNAL_GROUPS]
+    metadata:
+      vars:
+        SIM_DIR:
+          required: false
+          hint: |
+            URI identifying the simulation (Simer layout) to
+            be packaged as an FMU. A container relative path, defaults to
+            container working directory.
+          default: /sim
+        FMU_NAME:
+          required: true
+          hint: Name of the generated FMU.
+        PLATFORM:
+          required: false
+          hint: Platform of the FMU being generated (normally set automatically).
+        SIGNAL_GROUPS:
+          required: true
+          hint: Comma-delimited list of SignalGroup names. Matches 'doc.Metadata.Name'.
+        VERSION:
+          required: false
+          hint: Version of the generated FMU.
+        UUID:
+          required: false
+          hint: UUID of the generated FMU.
+        FMI_VERSION:
+          required: false
+          hint: FMI version of the generated FMU (i.e. 2 or 3).
+        OUT_DIR:
+          required: false
+          hint: |
+            URI identifying the output folder for the FMU. A container relative
+            path, defaults to /out. Should not be a sub-path of the SIM folder.
+          default: /out
+
+  generate-fmigateway:
+    desc: Generate a FMI Gateway FMU from existing Signal Groups.
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:generate-fmigateway
+    cmds:
+      - task: gen-gateway
+        vars:
+          SIGNAL_GROUPS: '{{.SIGNAL_GROUPS}}'
+          OUT_DIR: '{{.OUT_DIR}}'
+          SESSION: '{{.SESSION}}'
+          VERSION: '{{.VERSION}}'
+          FMI_VERSION: '{{.FMI_VERSION}}'
+          UUID: '{{.UUID}}'
+          FMU_NAME: '{{.FMU_NAME | default "Gateway"}}'
+          MODEL_IDENTIFIER: '{{.MODEL_IDENTIFIER}}'
+          ANNOTATIONS: '{{.ANNOTATIONS}}'
+    requires:
+      vars: [SIGNAL_GROUPS]
+    metadata:
+      vars:
+        SIGNAL_GROUPS:
+          required: true
+          hint: Signalgroups represented by this Gateway.
+        OUT_DIR:
+          required: false
+          hint: Path where the FMU should be created.
+          default: out
+        SESSION:
+          required: false
+          hint: Generate session handling.
+        VERSION:
+          required: false
+          hint: Version of the generated FMU.
+        FMI_VERSION:
+          required: false
+          hint: FMI version of the generated FMU (i.e. 2 or 3).
+        UUID:
+          required: false
+          hint: UUID of the generated FMU.
+        FMU_NAME:
+          required: false
+          hint: ModelName field in the FMU modelDescription.xml.
+          default: Gateway
+        MODEL_IDENTIFIER:
+          required: false
+          hint: MODEL_IDENTIFIER field in the FMU modelDescription.xml.
+        ANNOTATIONS:
+          required: false
+          hint: extra arbitary information as annotations in dictionary format.
+
+  gen-mcl:
+    internal: true
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:gen-mcl
+    vars:
+      # FMU_DIR: '{{.FMU_DIR}}'
+      OUT_DIR: '{{.OUT_DIR | default "out/model"}}'
+      # MCL_PATH: '{{.MCL_PATH}}'
+      PLATFORM: "{{if .PLATFORM}}--platform '{{.PLATFORM}}'{{else}}{{end}}"
+    cmds:
+      - docker run --rm
+          --user {{.USER}}:{{.GROUP}}
+          -v {{.ENTRYDIR}}:/sim
+          {{.FMI_IMAGE}}
+          gen-mcl
+            --fmu {{.FMU_DIR}}
+            --outdir {{.OUT_DIR}}
+            --mcl {{.MCL_PATH}}
+            {{.PLATFORM}}
+    requires:
+      vars: [FMU_DIR, MCL_PATH]
+
+  gen-signalgroup:
+    internal: true
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:gen-signalgroup
+    cmds:
+      - docker run --rm
+          --user {{.USER}}:{{.GROUP}}
+          -v {{.ENTRYDIR}}:/sim
+          {{.FMI_IMAGE}}
+          gen-signalgroup
+            --input {{.INPUT}}
+            --output {{.OUTPUT}}
+    requires:
+      vars: [INPUT, OUTPUT]
+
+  gen-fmu:
+    internal: true
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:gen-fmu
+    vars:
+      SIM_DIR: "{{if .SIM_DIR}}--sim '{{.SIM_DIR}}'{{else}}{{end}}"
+      # FMU_NAME: '{{.FMU_NAME}}'
+      PLATFORM: "{{if .PLATFORM}}--platform '{{.PLATFORM}}'{{else}}{{end}}"
+      SIGNAL_GROUPS: "{{if .SIGNAL_GROUPS}}--signalgroups '{{.SIGNAL_GROUPS}}'{{else}}{{end}}"
+      VERSION: "{{if .VERSION}}--version '{{.VERSION}}'{{else}}{{end}}"
+      UUID: "{{if .UUID}}--uuid '{{.UUID}}'{{else}}{{end}}"
+      FMI_VERSION: "{{if .FMI_VERSION}}--fmiVersion '{{.FMI_VERSION}}'{{else}}{{end}}"
+      OUT_DIR: "{{if .OUT_DIR}}--outdir '{{.OUT_DIR}}'{{else}}{{end}}"
+    cmds:
+      - mkdir -p {{.ENTRYDIR}}/../fmu
+      - docker run --rm
+          --user {{.USER}}:{{.GROUP}}
+          -v {{.ENTRYDIR}}:/sim
+          -v {{.ENTRYDIR}}/../fmu:/out
+          {{.FMI_IMAGE}}
+          gen-fmu
+            {{.SIM_DIR}}
+            --name {{.FMU_NAME}}
+            {{.OUT_DIR}}
+            {{.PLATFORM}}
+            {{.SIGNAL_GROUPS}}
+            {{.VERSION}}
+            {{.UUID}}
+            {{.FMI_VERSION}}
+    requires:
+      vars: [FMU_NAME]
+
+  gen-modelcfmu-annotations:
+    internal: true
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:gen-modelcfmu-annotations
+    vars:
+      SIM_DIR: "{{if .SIM_DIR}}--sim '{{.SIM_DIR}}'{{else}}{{end}}"
+      SIGNAL_GROUPS: "{{if .SIGNAL_GROUPS}}--signalgroups '{{.SIGNAL_GROUPS}}'{{else}}{{end}}"
+      RULEFILE: "{{if .RULEFILE}}--rule '{{.RULEFILE}}'{{else}}{{end}}"
+      RULESET: "{{if .RULESET}}--ruleset '{{.RULESET}}'{{else}}{{end}}"
+    cmds:
+      - docker run --rm
+          --user {{.USER}}:{{.GROUP}}
+          -v {{.ENTRYDIR}}:/sim
+          {{.FMI_IMAGE}}
+          gen-modelcfmu-annotations
+            {{.SIM_DIR}}
+            {{.SIGNAL_GROUPS}}
+            {{.RULEFILE}}
+            {{.RULESET}}
+    requires:
+      vars: []
+
+  gen-gateway:
+    internal: true
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:gen-gateway
+    vars:
+      # SIGNAL_GROUPS: '{{.SIGNAL_GROUPS}}'
+      OUT_DIR: '{{.OUT_DIR | default "out"}}'
+      SESSION: "{{if .SESSION}}--session '{{.SESSION}}'{{else}}{{end}}"
+      VERSION: "{{if .VERSION}}--version '{{.VERSION}}'{{else}}{{end}}"
+      FMI_VERSION: "{{if .FMI_VERSION}}--fmiVersion '{{.FMI_VERSION}}'{{else}}{{end}}"
+      UUID: "{{if .UUID}}--uuid '{{.UUID}}'{{else}}{{end}}"
+      FMU_NAME: "{{if .FMU_NAME}}--name '{{.FMU_NAME}}'{{else}}{{end}}"
+      MODEL_IDENTIFIER: "{{if .MODEL_IDENTIFIER}}--modelidentifier '{{.MODEL_IDENTIFIER}}'{{else}}{{end}}"
+      ANNOTATIONS: '{{if .ANNOTATIONS}}--annotations {{squote .ANNOTATIONS}}{{else}}{{end}}'
+      # FIXME work around for Taskfile issue.
+      FMI_TAG: '{{.FMI_TAG | default "latest"}}'
+    cmds:
+      - docker run --rm
+          --user {{.USER}}:{{.GROUP}}
+          -v {{.ENTRYDIR}}:/sim
+          {{.FMI_IMAGE}}
+          gen-gateway
+            --signalgroups {{.SIGNAL_GROUPS}}
+            --outdir {{.OUT_DIR}}
+            {{.SESSION}}
+            {{.VERSION}}
+            {{.FMI_VERSION}}
+            {{.UUID}}
+            {{.FMU_NAME}}
+            {{.MODEL_IDENTIFIER}}
+            {{.ANNOTATIONS}}
+    requires:
+      vars: [SIGNAL_GROUPS]
+
+  patch-signalgroup:
+    desc: Patch changes into a generated Signal Group.
+    run: always
+    dir: '{{.USER_WORKING_DIR}}'
+    label: dse:fmi:patch-signalgroup
+    vars:
+      INPUT: '{{.INPUT}}'
+      PATCH: '{{.PATCH}}'
+      REMOVE_UNKNOWN: '{{if .REMOVE_UNKNOWN}}--remove-unknown{{else}}{{end}}'
+    cmds:
+      - docker run --rm
+          --user {{.USER}}:{{.GROUP}}
+          -v {{.ENTRYDIR}}:/sim
+          {{.FMI_IMAGE}}
+          patch-signalgroup
+            --input {{.INPUT}}
+            --patch {{.PATCH}}
+            {{.REMOVE_UNKNOWN}}
+    requires:
+      vars: [INPUT, PATCH]
+    metadata:
+      vars:
+        INPUT:
+          required: true
+          hint: Path identifying the Signal Group to be patched.
+        PATCH:
+          required: true
+          hint: URI identifying the patch file to use.
+        REMOVE_UNKNOWN:
+          required: false
+          hint: Remove unknown items (i.e. not in the patch file).

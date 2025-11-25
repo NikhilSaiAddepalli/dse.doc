@@ -1,0 +1,357 @@
+---
+name: CI
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BASE_NAME: ${{ github.repository_owner }}/dse
+  PACKAGE_VERSION: 0.0.2
+  package_name: Fmi
+  build_dir: dse/build
+  CCACHE_SECONDARY_STORAGE: ${{ secrets.CCACHE_SECONDARY_STORAGE }}
+
+jobs:
+  build:
+    runs-on: [ubuntu-latest]
+    strategy:
+      matrix:
+        package_arch:
+          - linux-amd64
+          - linux-x86
+          - linux-i386
+          - windows-x86
+          - windows-x64
+    container:
+      image: ghcr.io/boschglobal/dse-gcc-builder:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Build package metadata
+        id: package_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: dse/fmimcl
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Get package version
+        if: startsWith(github.ref, 'refs/tags/')
+        id: package
+        run: |
+          echo "PACKAGE_VERSION=${{ fromJSON(steps.package_meta.outputs.json).labels['org.opencontainers.image.version'] }}" >> $GITHUB_ENV
+
+      - name: Build
+        env:
+          PACKAGE_ARCH: ${{ matrix.package_arch }}
+        run: |
+          make
+
+      - name: Test
+        if: ${{ matrix.package_arch == 'linux-amd64' }}
+        env:
+          PACKAGE_ARCH: ${{ matrix.package_arch }}
+        run: |
+          make test_cmocka
+
+      - name: Stats
+        run: |
+          ccache -s -v || true
+
+      - name: Package
+        env:
+          PACKAGE_ARCH: ${{ matrix.package_arch }}
+        run: |
+          make package
+          tar -czf sandbox_out.tar.gz -C . ${{ env.build_dir }}/_out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.package_name }}-${{ matrix.package_arch }}-package
+          path: |
+            ${{ env.build_dir }}/_dist/${{ env.package_name }}-${{ env.PACKAGE_VERSION }}-${{ matrix.package_arch }}.tar.gz
+            ${{ env.build_dir }}/_dist/${{ env.package_name }}-${{ env.PACKAGE_VERSION }}-${{ matrix.package_arch }}.zip
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.package_name }}-${{ matrix.package_arch }}-sandbox
+          path: |
+            sandbox_out.tar.gz
+          retention-days: 1
+
+  test_e2e:
+    runs-on: [ubuntu-latest]
+    needs: [build, tools]
+    container:
+      image: ghcr.io/boschglobal/dse-testscript:latest
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Download artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: image_fmi
+          path: /tmp
+
+      - name: Load images
+        run: |
+          docker load --input /tmp/fmi.tar
+          docker image ls -a
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.package_name }}-linux-amd64-sandbox
+          path: .
+
+      - name: Sandbox
+        run: |
+          tar xzf sandbox_out.tar.gz
+          find ${{ env.build_dir }}/_out -type f -name '*' -exec ls -sh --color=auto {} \;
+
+      - name: Set environment
+        run: |
+          echo "HOST_DOCKER_WORKSPACE=${{ github.workspace }}" >> $GITHUB_ENV
+
+      - name: Test
+        run: |
+          export HOST_DOCKER_WORKSPACE=${{ env.HOST_DOCKER_WORKSPACE }}
+          make test_e2e
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: [ubuntu-latest]
+    needs: [build, test_e2e]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Create Release from Tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+        run: |
+          gh release create "$tag" \
+            --notes-from-tag
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: [ubuntu-latest]
+    needs: [release]
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        package_arch:
+          - linux-amd64
+          - linux-x86
+          - linux-i386
+          - windows-x86
+          - windows-x64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Build package metadata
+        id: package_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: dse/fmimcl
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Get package version
+        if: startsWith(github.ref, 'refs/tags/')
+        id: package
+        run: |
+          echo "PACKAGE_VERSION=${{ fromJSON(steps.package_meta.outputs.json).labels['org.opencontainers.image.version'] }}" >> $GITHUB_ENV
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.package_name }}-${{ matrix.package_arch }}-package
+          path: ${{ env.build_dir }}/_dist
+
+      - name: Upload Release Asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+        run: |
+          gh release upload "$tag" \
+            ${{ env.build_dir }}/_dist/${{ env.package_name }}-${{ env.PACKAGE_VERSION }}-${{ matrix.package_arch }}.zip \
+            --clobber
+
+  publish_examples:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: [ubuntu-latest]
+    needs: [release]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: Fmi-linux-amd64-sandbox
+          path: .
+      - name: Sandbox
+        run: |
+          tar xzf sandbox_out.tar.gz
+          ls -R
+          cp dse/build/_out/examples/fmu/network/fmi2/network.fmu dse/build/_out/examples/fmu/network/fmi2/example-network-linux-amd64-fmi2.fmu
+          cp dse/build/_out/examples/fmu/network/fmi3/network.fmu dse/build/_out/examples/fmu/network/fmi3/example-network-linux-amd64-fmi3.fmu
+      - name: Upload Release Asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag: ${{ github.ref_name }}
+        run: |
+          gh release upload "$tag" \
+            dse/build/_out/examples/fmu/network/fmi2/example-network-linux-amd64-fmi2.fmu \
+            dse/build/_out/examples/fmu/network/fmi3/example-network-linux-amd64-fmi3.fmu \
+            --clobber
+
+  tools:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: [ubuntu-latest]
+    needs: [build]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE_NAME }}-fmi
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Version
+        if: startsWith(github.ref, 'refs/tags/')
+        id: package
+        run: |
+          echo "PACKAGE_VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}" >> $GITHUB_ENV
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.package_name }}-linux-amd64-sandbox
+          path: sandbox/${{ env.package_name }}-linux-amd64-sandbox
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.package_name }}-linux-x86-sandbox
+          path: sandbox/${{ env.package_name }}-linux-x86-sandbox
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.package_name }}-linux-i386-sandbox
+          path: sandbox/${{ env.package_name }}-linux-i386-sandbox
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.package_name }}-windows-x86-sandbox
+          path: sandbox/${{ env.package_name }}-windows-x86-sandbox
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ env.package_name }}-windows-x64-sandbox
+          path: sandbox/${{ env.package_name }}-windows-x64-sandbox
+
+      - name: Sandbox
+        run: |
+          (cd sandbox/${{ env.package_name }}-linux-amd64-sandbox; tar xzf sandbox_out.tar.gz)
+          (cd sandbox/${{ env.package_name }}-linux-x86-sandbox; tar xzf sandbox_out.tar.gz)
+          (cd sandbox/${{ env.package_name }}-linux-i386-sandbox; tar xzf sandbox_out.tar.gz)
+          (cd sandbox/${{ env.package_name }}-windows-x86-sandbox; tar xzf sandbox_out.tar.gz)
+          (cd sandbox/${{ env.package_name }}-windows-x64-sandbox; tar xzf sandbox_out.tar.gz)
+
+          mkdir -p extra/tools/fmi/build/stage/package/linux-amd64
+          mkdir -p extra/tools/fmi/build/stage/package/linux-x86
+          mkdir -p extra/tools/fmi/build/stage/package/linux-i386
+          mkdir -p extra/tools/fmi/build/stage/package/windows-x86
+          mkdir -p extra/tools/fmi/build/stage/package/windows-x64
+
+          cp -r sandbox/${{ env.package_name }}-linux-amd64-sandbox/${{ env.build_dir }}/_out/fmimodelc extra/tools/fmi/build/stage/package/linux-amd64
+          cp -r sandbox/${{ env.package_name }}-linux-x86-sandbox/${{ env.build_dir }}/_out/fmimodelc extra/tools/fmi/build/stage/package/linux-x86
+          cp -r sandbox/${{ env.package_name }}-linux-i386-sandbox/${{ env.build_dir }}/_out/fmimodelc extra/tools/fmi/build/stage/package/linux-i386
+          cp -r sandbox/${{ env.package_name }}-windows-x86-sandbox/${{ env.build_dir }}/_out/fmimodelc extra/tools/fmi/build/stage/package/windows-x86
+          cp -r sandbox/${{ env.package_name }}-windows-x64-sandbox/${{ env.build_dir }}/_out/fmimodelc extra/tools/fmi/build/stage/package/windows-x64
+
+          cp -r sandbox/${{ env.package_name }}-linux-amd64-sandbox/${{ env.build_dir }}/_out/licenses -t extra/tools/fmi/build/stage
+          ls -R extra/tools/fmi/build/stage
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          context: extra/tools/fmi
+          file: ./extra/tools/fmi/build/package/Dockerfile
+          build-args: |
+             PACKAGE_VERSION=${{ env.PACKAGE_VERSION }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=docker,dest=/tmp/fmi.tar
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: image_fmi
+          path: /tmp/fmi.tar
+          retention-days: 1
+
+  docker_push:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: [ubuntu-latest]
+    needs: [tools, test_e2e, release]
+    strategy:
+      matrix:
+        container:
+          - fmi
+    steps:
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: image_${{ matrix.container }}
+          path: /tmp
+
+      - name: Load and Push Image
+        run: |
+          docker load --input /tmp/${{ matrix.container }}.tar
+          docker image ls -a
+          docker image push --all-tags ${{ env.REGISTRY }}/${{ env.IMAGE_BASE_NAME }}-${{ matrix.container }}

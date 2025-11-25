@@ -1,0 +1,28 @@
+# Copyright 2024 Robert Bosch GmbH
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+kind: Stack
+metadata:
+  name: target_stack
+spec:
+  models:
+    - name: simbus
+      model:
+        name: simbus
+      uid: 0
+      channels:
+        - expectedModelCount: 1
+          name: signal
+        - expectedModelCount: 1
+          name: network
+    - name: target_inst
+      uid: 42
+      model:
+        name: Target
+      channels:
+        - name: scalar
+          alias: scalar_vector
+        - name: network
+          alias: network_vector

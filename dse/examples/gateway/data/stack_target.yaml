@@ -1,0 +1,35 @@
+---
+kind: Stack
+metadata:
+  name: stack_target
+spec:
+  connection:
+    transport:
+      redis:
+        uri: redis://localhost:6379
+        timeout: 60
+  models:
+    - name: simbus
+      model:
+        name: simbus
+      channels:
+        - name: scalar
+          expectedModelCount: 2
+        - name: binary
+          expectedModelCount: 2
+    - name: target_inst
+      uid: 43
+      model:
+        name: Target
+      runtime:
+        files:
+          - fmu/resources/signalgroup_target.yaml
+      channels:
+        - name: scalar
+          alias: scalar_vector
+          selectors:
+            channel: scalar
+        - name: binary
+          alias: binary_vector_target
+          selectors:
+            channel: binary_target

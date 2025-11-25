@@ -1,0 +1,213 @@
+# Copyright 2024 Robert Bosch GmbH
+#
+# SPDX-License-Identifier: Apache-2.0
+
+---
+kind: Stack
+metadata:
+  name: stack
+spec:
+  runtime:
+    env:
+      SIMBUS_LOGLEVEL: 2
+  connection:
+    transport:
+      redis:
+        uri: redis://localhost:6379
+        timeout: 60
+  models:
+    - name: simbus
+      model:
+        name: simbus
+      channels:
+        - name: signal
+          expectedModelCount: 2
+        - name: network
+          expectedModelCount: 2
+    - name: fmu_inst
+      uid: 42
+      model:
+        name: FMIMCL
+      metadata:
+        network: stub
+      channels:
+        - name: signal
+          alias: signal_channel
+          selectors:
+            channel: signal_vector
+        - name: network
+          alias: network_channel
+          selectors:
+            channel: network_vector
+    - name: input_inst
+      uid: 21
+      model:
+        name: Input
+      channels:
+        - name: signal
+          alias: input_channel
+        - name: network
+          alias: binary_channel
+---
+kind: Model
+metadata:
+  name: simbus
+---
+kind: SignalGroup
+metadata:
+  name: VARIABLES
+  labels:
+    model: Input
+    channel: input_vector
+spec:
+  signals:
+    - signal: real_3_rx
+    - signal: integer_3_rx
+    - signal: real_A_rx
+---
+kind: SignalGroup
+metadata:
+  name: STRINGS
+  labels:
+    model: Input
+    channel: binary_vector
+  annotations:
+    vector_type: binary
+spec:
+  signals:
+    - signal: string_tx
+    - signal: string_rx
+    - signal: string_ascii85_tx
+    - signal: string_ascii85_rx
+---
+kind: SignalGroup
+metadata:
+  name: VARIABLES
+  labels:
+    model: FMIMCL
+    channel: signal_vector
+spec:
+  signals:
+    - signal: real_3_rx
+      annotations:
+        fmi_variable_vref: 0
+        fmi_variable_name: real_3_rx
+        fmi_variable_type: Real
+        fmi_variable_causality: input
+    - signal: real_1_tx
+      annotations:
+        fmi_variable_vref: 1
+        fmi_variable_name: real_1_tx
+        fmi_variable_type: Real
+        fmi_variable_causality: output
+    - signal: integer_3_rx
+      annotations:
+        fmi_variable_vref: 2
+        fmi_variable_name: integer_3_rx
+        fmi_variable_type: Integer
+        fmi_variable_causality: input
+    - signal: integer_2_tx
+      annotations:
+        fmi_variable_vref: 3
+        fmi_variable_name: integer_2_tx
+        fmi_variable_type: Integer
+        fmi_variable_causality: output
+    - signal: integer_1_tx
+      annotations:
+        fmi_variable_vref: 4
+        fmi_variable_name: integer_1_tx
+        fmi_variable_type: Integer
+        fmi_variable_causality: output
+    - signal: real_2_rx
+      annotations:
+        fmi_variable_vref: 5
+        fmi_variable_name: real_2_rx
+        fmi_variable_type: Real
+        fmi_variable_causality: input
+    - signal: bool_1_rx
+      annotations:
+        fmi_variable_vref: 6
+        fmi_variable_name: bool_1_rx
+        fmi_variable_type: Integer
+        fmi_variable_causality: input
+    - signal: bool_2_tx
+      annotations:
+        fmi_variable_vref: 7
+        fmi_variable_name: bool_2_tx
+        fmi_variable_type: Integer
+        fmi_variable_causality: output
+    - signal: real_A_rx
+      annotations:
+        fmi_variable_vref: 8
+        fmi_variable_name: real_A_rx
+        fmi_variable_type: Real
+        fmi_variable_causality: input
+    - signal: real_A_rx
+      annotations:
+        fmi_variable_vref: 9
+        fmi_variable_name: real_A2_rx
+        fmi_variable_type: Real
+        fmi_variable_causality: input
+    - signal: real_B_tx
+      annotations:
+        fmi_variable_vref: 10
+        fmi_variable_name: real_A_rx
+        fmi_variable_type: Real
+        fmi_variable_causality: output
+    - signal: real_C_tx
+      annotations:
+        fmi_variable_vref: 11
+        fmi_variable_name: real_A2_rx
+        fmi_variable_type: Real
+        fmi_variable_causality: output
+    - signal: real_D_tx
+      annotations:
+        fmi_variable_vref: 11
+        fmi_variable_name: real_A2_rx
+        fmi_variable_type: Real
+        fmi_variable_causality: output
+    - signal: local_var
+      annotations:
+        fmi_variable_vref: 12
+        fmi_variable_name: local_var
+        fmi_variable_type: Real
+        fmi_variable_causality: local
+---
+kind: SignalGroup
+metadata:
+  name: NETWORK_VARIABLES
+  labels:
+    model: FMIMCL
+    channel: network_vector
+  annotations:
+    vector_type: binary
+spec:
+  signals:
+    - signal: string_tx
+      annotations:
+        fmi_variable_vref: 100
+        fmi_variable_name: string_tx
+        fmi_variable_type: String
+        fmi_variable_causality: input
+    - signal: string_rx
+      annotations:
+        fmi_variable_vref: 101
+        fmi_variable_name: string_rx
+        fmi_variable_type: String
+        fmi_variable_causality: output
+    - signal: string_ascii85_tx
+      annotations:
+        fmi_variable_vref: 102
+        fmi_variable_name: string_ascii85_tx
+        fmi_variable_type: String
+        fmi_variable_causality: input
+        fmi_annotations:
+          dse.standards.fmi-ls-binary-to-text.encoding: ascii85
+    - signal: string_ascii85_rx
+      annotations:
+        fmi_variable_vref: 103
+        fmi_variable_name: string_ascii85_rx
+        fmi_variable_type: String
+        fmi_variable_causality: output
+        fmi_annotations:
+          dse.standards.fmi-ls-binary-to-text.encoding: ascii85
